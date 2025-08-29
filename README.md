@@ -72,6 +72,7 @@ API em Node.js/TypeScript para gerenciar **sessões do WhatsApp Web** usando [`w
 Crie um arquivo `.env` na raiz (ou configure no Easypanel). Exemplo:
 
 ```
+NODE_ENV=production/development
 PORT=3000
 SESSIONS_DIR=/app/sessions
 API_KEY=change-me
@@ -89,6 +90,7 @@ DESTROY_MAX_RETRIES=5
 
 | Variável                     |      Default | Descrição                                                                                          |
 | ---------------------------- | -----------: | -------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                   | `production` | Ambiente de execução (`production`/`development`)                                                  |
 | `PORT`                       |       `3000` | Porta HTTP da API                                                                                  |
 | `SESSIONS_DIR`               | `./sessions` | Pasta onde o **LocalAuth** persiste as sessões                                                     |
 | `API_KEY`                    |        vazio | Se definido, todas as rotas (exceto `/health`, `/docs`, `/openapi.json`) exigem header `x-api-key` |
@@ -133,13 +135,15 @@ Exemplo de `docker compose` (ajuste volumes/portas conforme sua infra):
 ```yaml
 services:
   api:
-    image: whatsapp-max-api:latest
     build:
       context: .
-      dockerfile: Dockerfile
+      target: runtime
+    container_name: whatsapp-max-api
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
     env_file: .env
+    environment:
+      - NODE_ENV=production
     volumes:
       - ./sessions:/app/sessions  # persistência entre reinícios
     restart: unless-stopped
