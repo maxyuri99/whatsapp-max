@@ -1,0 +1,48 @@
+services:
+  api:
+    build:
+      context: .
+      target: runtime
+    container_name: whatsapp-max-api
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - PORT=${PORT:-3000}
+      - SESSIONS_DIR=/app/sessions
+      - API_KEY=${API_KEY}
+      - HEADLESS=${HEADLESS:-true}
+      - CHROME_EXECUTABLE_PATH=${CHROME_EXECUTABLE_PATH:-/usr/bin/chromium}
+      - CHROME_EXTRA_ARGS=${CHROME_EXTRA_ARGS:-"--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu"}
+      - WEBHOOK_TIMEOUT_MS=${WEBHOOK_TIMEOUT_MS:-6000}
+      - WEBHOOK_MAX_RETRIES=${WEBHOOK_MAX_RETRIES:-3}
+      - MAX_CONCURRENT_SESSIONS=${MAX_CONCURRENT_SESSIONS:-0}
+      - NODE_ENV=production
+    volumes:
+      - ./sessions:/app/sessions
+    restart: unless-stopped
+
+  api-dev:
+    build:
+      context: .
+      target: dev
+    container_name: whatsapp-max-api-dev
+    ports:
+      - "3001:3000"         
+    environment:
+      - PORT=3000
+      - SESSIONS_DIR=/app/sessions
+      - API_KEY=${API_KEY}
+      - HEADLESS=${HEADLESS:-true}
+      - CHROME_EXECUTABLE_PATH=/usr/bin/chromium
+      - CHROME_EXTRA_ARGS=${CHROME_EXTRA_ARGS:-"--no-sandbox,--disable-setuid-sandbox,--disable-dev-shm-usage,--disable-gpu"}
+      - WEBHOOK_TIMEOUT_MS=${WEBHOOK_TIMEOUT_MS:-6000}
+      - WEBHOOK_MAX_RETRIES=${WEBHOOK_MAX_RETRIES:-3}
+      - MAX_CONCURRENT_SESSIONS=${MAX_CONCURRENT_SESSIONS:-0}
+      - NODE_ENV=development
+      - CHOKIDAR_USEPOLLING=1
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - ./sessions:/app/sessions
+    command: npm run dev
+    restart: unless-stopped
