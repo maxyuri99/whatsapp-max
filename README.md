@@ -108,7 +108,7 @@ DESTROY_MAX_RETRIES=5
 ### Instalação local
 
 ```bash
-git clone https://github.com/seu-usuario/whatsapp-max.git
+git clone https://github.com/maxyuri99/whatsapp-max.git
 cd whatsapp-max
 
 # 1) crie o .env (veja seção acima)
