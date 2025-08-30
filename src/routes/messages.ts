@@ -25,7 +25,6 @@ messagesRouter.post("/send", async (req: Request, res: Response) => {
     }
 });
 
-// Listar mensagens de um chat (sessionId nos params, chatId no body)
 messagesRouter.get("/:sessionId/history", async (req: Request, res: Response) => {
     const { chatId } = (req.body || {}) as { chatId?: string };
     if (!chatId) return res.status(400).json({ error: "chatId is required in body" });
@@ -39,7 +38,6 @@ messagesRouter.get("/:sessionId/history", async (req: Request, res: Response) =>
     }
 });
 
-// Resolver número para chatId (aceita phone no body ou query; prefixa 55 se faltar)
 messagesRouter.get("/:sessionId/resolve", async (req: Request, res: Response) => {
     const phone = (req.body && (req.body as any).phone) || (req.query && (req.query as any).phone);
     if (!phone) return res.status(400).json({ error: "phone is required" });

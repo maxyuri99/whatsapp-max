@@ -34,16 +34,10 @@ export const CONFIG = {
     WEBHOOK_TIMEOUT_MS: num(process.env.WEBHOOK_TIMEOUT_MS, 6000),
     WEBHOOK_MAX_RETRIES: num(process.env.WEBHOOK_MAX_RETRIES, 3),
     MAX_CONCURRENT_SESSIONS: num(process.env.MAX_CONCURRENT_SESSIONS, 0),
-    // Tempo para aguardar a sessão voltar a READY no boot. Aumentado para ser mais tolerante.
     BOOTSTRAP_READY_TIMEOUT_MS: num(process.env.BOOTSTRAP_READY_TIMEOUT_MS, 180000),
     DESTROY_MAX_RETRIES: num(process.env.DESTROY_MAX_RETRIES, 5),
-    // Caso o evento 'ready' não dispare, promovemos a READY quando o estado
-    // permanecer CONNECTED por este tempo.
     READY_FALLBACK_MS: num(process.env.READY_FALLBACK_MS, 30000),
-    // Tempo máximo para considerar que a injeção do wwebjs (Store) está pronta
-    // antes de permitir operações como getChats/sendMessage.
     WWEB_READY_CHECK_TIMEOUT_MS: num(process.env.WWEB_READY_CHECK_TIMEOUT_MS, 60000),
-    // Auto-reconexão controlada quando a sessão entra em FAILED
     RECONNECT_MAX_ATTEMPTS: num(process.env.RECONNECT_MAX_ATTEMPTS, 5),
     RECONNECT_BASE_DELAY_MS: num(process.env.RECONNECT_BASE_DELAY_MS, 2000),
     RECONNECT_MAX_DELAY_MS: num(process.env.RECONNECT_MAX_DELAY_MS, 15000),

@@ -83,7 +83,6 @@ sessionsRouter.get("/:id/chats", async (req: Request, res: Response) => {
     }
 });
 
-// Definir/atualizar webhook da sessão
 sessionsRouter.post("/:id/webhook", async (req: Request, res: Response) => {
     try {
         const { url } = req.body as { url?: string };
@@ -96,7 +95,6 @@ sessionsRouter.post("/:id/webhook", async (req: Request, res: Response) => {
     }
 });
 
-// Destruir sessão (com opção de apagar dados do disco)
 sessionsRouter.delete("/:id", async (req: Request, res: Response) => {
     try {
         const del = String(req.query.deleteData || "false").toLowerCase();
@@ -110,7 +108,6 @@ sessionsRouter.delete("/:id", async (req: Request, res: Response) => {
     }
 });
 
-// Reiniciar sessão mantendo credenciais
 sessionsRouter.post("/:id/restart", async (req: Request, res: Response) => {
     try {
         const data = await sessionManager.restart(req.params.id);
@@ -122,7 +119,6 @@ sessionsRouter.post("/:id/restart", async (req: Request, res: Response) => {
     }
 });
 
-// Resetar credenciais (apaga LocalAuth) e reiniciar pedindo novo QR
 sessionsRouter.post("/:id/reset-auth", async (req: Request, res: Response) => {
     try {
         const data = await sessionManager.resetAuth(req.params.id);
@@ -134,7 +130,6 @@ sessionsRouter.post("/:id/reset-auth", async (req: Request, res: Response) => {
     }
 });
 
-// Se estado for FAILED, força tentativa de recuperação
 sessionsRouter.post("/:id/unfail", async (req: Request, res: Response) => {
     try {
         const data = await sessionManager.unfail(req.params.id);

@@ -108,13 +108,10 @@ export class SessionManager {
                 if (connected) {
                     logger.info({ sessionId }, "bootstrapped session from disk");
                 } else {
-                    // Não deletar imediatamente se estiver carregando/aguardando.
-                    // Mantemos a sessão para dar mais tempo ao WhatsApp Web.
                     logger.warn({ sessionId }, "session not READY yet after bootstrap timeout; keeping data for longer");
                 }
             } catch (err: any) {
                 logger.error({ sessionId, err: err?.message }, "bootstrap failed");
-                // Em falha de bootstrap, evitamos deleção agressiva para não interromper carga do WhatsApp.
             }
         }
     }
@@ -286,7 +283,6 @@ export class SessionManager {
             await this.startClient(sessionId);
             const ready = await this.waitForReadyOrTimeout(sessionId, CONFIG.BOOTSTRAP_READY_TIMEOUT_MS);
             if (!ready) {
-                // Não destruir aqui para dar mais tempo ao WhatsApp Web completar o carregamento.
                 return false;
             }
             return true;
@@ -327,7 +323,6 @@ export class SessionManager {
         const dir = this.sessionDir(sessionId);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         const meta = this.readMeta(sessionId);
-        // Desbloqueia possíveis locks tanto no diretório raiz quanto no perfil LocalAuth (session-<id>)
         const localAuthDir = path.join(CONFIG.SESSIONS_DIR, `session-${sessionId}`);
         await unlockProfileIfStale(dir);
         await unlockProfileIfStale(localAuthDir);
@@ -347,7 +342,6 @@ export class SessionManager {
         const entry: InMemorySession = { client, status: "INITIALIZING", meta, initializing: true, injectionReady: false, retryAttempt: 0, retryTimer: null };
         this.sessions.set(sessionId, entry);
 
-        // Mantém apenas telemetria silenciosa (sem logs redundantes)
         client.on("loading_screen", async (percent: number, message: string) => {
             entry.loadingPercent = percent;
             entry.loadingMessage = message;
@@ -376,7 +370,6 @@ export class SessionManager {
             logger.info({ sessionId }, "authenticated");
             await this.emit(sessionId, "authenticated", { sessionId, status: entry.status });
 
-            // Após autenticar, sondar e promover a READY se ficar CONNECTED além do tempo de fallback
             (async () => {
                 const started = Date.now();
                 while (true) {
@@ -385,15 +378,15 @@ export class SessionManager {
                     try {
                         const st = await client.getState();
                         if (st === "CONNECTED" && elapsed >= CONFIG.READY_FALLBACK_MS) {
-                            // Antes de promover a READY, garantir que a injeção do wwebjs esteja pronta
                             try {
                                 await this.waitForWWebReady(client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
                                 entry.injectionReady = true;
                             } catch (e: any) {
                                 logger.warn({ sessionId, err: e?.message }, "wweb injection not ready on fallback");
                             }
-                            try { await client.sendPresenceAvailable(); } catch {}
-                            // marca READY mesmo se o evento 'ready' não disparar
+                            try {
+                                await client.sendPresenceAvailable();
+                            } catch {}
                             entry.meta.lastConnectionAt = new Date().toISOString();
                             this.writeMeta(entry.meta);
                             entry.initializing = false;
@@ -416,7 +409,6 @@ export class SessionManager {
         });
 
         client.on("ready", async () => {
-            // caminho normal de promoção a READY
             entry.status = "READY";
             entry.initializing = false;
             entry.qrData = undefined;
@@ -432,7 +424,6 @@ export class SessionManager {
             entry.status = "DISCONNECTED";
             await this.emit(sessionId, "disconnected", { sessionId, status: entry.status, reason });
             logger.warn({ sessionId, reason }, "disconnected");
-            // Re-inicializa com atraso curto para evitar conflitos de I/O (Windows EBUSY)
             if (!entry.initializing) {
                 entry.initializing = true;
                 setTimeout(async () => {
@@ -471,14 +462,14 @@ export class SessionManager {
         try {
             await client.initialize();
         } catch (err: any) {
-            // Marca estado para não ficar preso em INITIALIZING
             const entry = this.sessions.get(sessionId);
             if (entry) {
                 entry.initializing = false;
                 entry.status = "FAILED";
             }
-            // Tenta um desbloqueio adicional no perfil e repropaga o erro
-            try { await unlockProfileIfStale(localAuthDir); } catch {}
+            try {
+                await unlockProfileIfStale(localAuthDir);
+            } catch {}
             throw err;
         }
         return entry;
@@ -608,7 +599,6 @@ export class SessionManager {
         }
     }
 
-    // Exporta mensagens de um chat, buscando em lotes até esgotar
     async getMessages(sessionId: string, chatId: string) {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
@@ -628,7 +618,6 @@ export class SessionManager {
             const lastId = last?.id?._serialized || last?.id;
             if (!lastId || lastId === before) break;
             before = lastId;
-            // Proteção: evita loops extremos
             if (all.length >= 5000) break;
         }
         const simplified = all.map((m: any) => ({
@@ -636,7 +625,7 @@ export class SessionManager {
             from: m.from,
             to: m.to,
             timestamp: m.timestamp,
-            dateSent: typeof m.timestamp === 'number' ? new Date(m.timestamp * 1000).toISOString() : undefined,
+            dateSent: typeof m.timestamp === "number" ? new Date(m.timestamp * 1000).toISOString() : undefined,
             type: m.type,
             body: m.body,
             fromMe: m.fromMe,
@@ -646,41 +635,43 @@ export class SessionManager {
         return { sessionId, chatId, total: simplified.length, messages: simplified };
     }
 
-    // Resolve número (com ou sem código do país) para chatId
     async resolveChatId(sessionId: string, phoneRaw: string) {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
         if (!phoneRaw || !phoneRaw.trim()) throw new Error("phone is required");
         let digits = String(phoneRaw).replace(/\D/g, "");
         if (!digits.startsWith("55")) digits = `55${digits}`;
-        // getNumberId espera o número sem sufixo @c.us
         const wa = await s.client.getNumberId(digits);
         if (!wa) return { sessionId, phone: digits, exists: false };
         const chatId = wa._serialized || `${digits}@c.us`;
         return { sessionId, phone: digits, exists: true, chatId };
     }
 
-    // Reinicia a sessão mantendo as credenciais
     async restart(sessionId: string) {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
-        try { await s.client.destroy(); } catch {}
+        try {
+            await s.client.destroy();
+        } catch {}
         this.clearRetry(sessionId);
         this.sessions.delete(sessionId);
         const entry = await this.startClient(sessionId);
         return { sessionId, status: entry.status };
     }
 
-    // Apaga as credenciais (LocalAuth) e reinicia pedindo novo QR
     async resetAuth(sessionId: string) {
         const s = this.sessions.get(sessionId);
         if (s) {
-            try { await s.client.destroy(); } catch {}
+            try {
+                await s.client.destroy();
+            } catch {}
             this.sessions.delete(sessionId);
         }
         this.clearRetry(sessionId);
         const authDir = path.join(CONFIG.SESSIONS_DIR, `session-${sessionId}`);
-        try { await unlockProfileIfStale(authDir); } catch {}
+        try {
+            await unlockProfileIfStale(authDir);
+        } catch {}
         await this.rmDirRetry(authDir);
         const root = this.sessionDir(sessionId);
         if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
@@ -689,7 +680,6 @@ export class SessionManager {
         return { sessionId, status: entry.status };
     }
 
-    // Se estiver em FAILED, tenta reiniciar
     async unfail(sessionId: string) {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
