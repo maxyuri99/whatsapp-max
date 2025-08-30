@@ -4,6 +4,7 @@ services:
       context: .
       target: runtime
     container_name: whatsapp-max-api
+    profiles: ["prod"]
     environment:
       - NODE_ENV=production
       - PORT=${PORT:-3000}
@@ -17,6 +18,9 @@ services:
       - MAX_CONCURRENT_SESSIONS=${MAX_CONCURRENT_SESSIONS:-0}
       - BOOTSTRAP_READY_TIMEOUT_MS=${BOOTSTRAP_READY_TIMEOUT_MS:-30000}
       - DESTROY_MAX_RETRIES=${DESTROY_MAX_RETRIES:-5}
+      - RECONNECT_MAX_ATTEMPTS=${RECONNECT_MAX_ATTEMPTS:-5}
+      - RECONNECT_BASE_DELAY_MS=${RECONNECT_BASE_DELAY_MS:-2000}
+      - RECONNECT_MAX_DELAY_MS=${RECONNECT_MAX_DELAY_MS:-15000}
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     volumes:
@@ -28,10 +32,11 @@ services:
       context: .
       target: dev
     container_name: whatsapp-max-api-dev
+    profiles: ["dev"]
     environment:
       - NODE_ENV=development
       - PORT=${PORT:-3000}
-      - SESSIONS_DIR=/app/sessions
+      - SESSIONS_DIR=/app/sessions-dev
       - API_KEY=${API_KEY}
       - HEADLESS=${HEADLESS:-true}
       - CHROME_EXECUTABLE_PATH=/usr/bin/chromium
@@ -41,12 +46,15 @@ services:
       - MAX_CONCURRENT_SESSIONS=${MAX_CONCURRENT_SESSIONS:-0}
       - BOOTSTRAP_READY_TIMEOUT_MS=${BOOTSTRAP_READY_TIMEOUT_MS:-30000}
       - DESTROY_MAX_RETRIES=${DESTROY_MAX_RETRIES:-5}
+      - RECONNECT_MAX_ATTEMPTS=${RECONNECT_MAX_ATTEMPTS:-5}
+      - RECONNECT_BASE_DELAY_MS=${RECONNECT_BASE_DELAY_MS:-2000}
+      - RECONNECT_MAX_DELAY_MS=${RECONNECT_MAX_DELAY_MS:-15000}
       - CHOKIDAR_USEPOLLING=1
     ports:
       - "${DEV_PORT:-3001}:${PORT:-3000}"
     volumes:
       - .:/app
       - /app/node_modules
-      - ./sessions:/app/sessions
+      - ./sessions-dev:/app/sessions-dev
     command: npm run dev
     restart: unless-stopped

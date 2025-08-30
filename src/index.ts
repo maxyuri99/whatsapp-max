@@ -43,3 +43,8 @@ const shutdown = () => {
 };
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+// Evita que rejeições não tratadas derrubem o processo (ex.: EBUSY em LocalAuth no Windows)
+process.on("unhandledRejection", (reason: any) => {
+    logger.error({ err: reason?.stack || reason?.message || reason }, "unhandled rejection");
+});

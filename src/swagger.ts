@@ -58,6 +58,7 @@ export const swaggerSpec = {
             ListChatsResponse: {
                 type: "object",
                 properties: {
+                    message: { type: "string", example: "ok" },
                     sessionId: { type: "string" },
                     page: { type: "integer" },
                     limit: { type: "integer" },
@@ -65,6 +66,40 @@ export const swaggerSpec = {
                     pages: { type: "integer" },
                     ids: { type: "array", items: { type: "string" } },
                 },
+            },
+            HistoryRequest: {
+                type: "object",
+                required: ["chatId"],
+                properties: { chatId: { type: "string", example: "554888211762@c.us" } },
+            },
+            HistoryMessage: {
+                type: "object",
+                properties: {
+                    id: { type: "string" },
+                    from: { type: "string" },
+                    to: { type: "string" },
+                    timestamp: { type: "integer" },
+                    dateSent: { type: "string", format: "date-time" },
+                    type: { type: "string" },
+                    body: { type: "string" },
+                    fromMe: { type: "boolean" },
+                    hasMedia: { type: "boolean" },
+                    ack: { type: "integer" },
+                },
+            },
+            HistoryResponse: {
+                type: "object",
+                properties: {
+                    message: { type: "string", example: "ok" },
+                    sessionId: { type: "string" },
+                    chatId: { type: "string" },
+                    total: { type: "integer" },
+                    messages: { type: "array", items: { $ref: "#/components/schemas/HistoryMessage" } },
+                },
+            },
+            ResolveNumberResponse: {
+                type: "object",
+                properties: { message: { type: "string", example: "ok" }, chatId: { type: "string" }, phone: { type: "string" } },
             },
         },
     },
@@ -179,5 +214,30 @@ export const swaggerSpec = {
                 responses: { "200": { description: "Enviado" }, "400": { description: "Erro" }, "404": { description: "Sessão não encontrada" } },
             },
         },
+        "/sessions/{id}/restart": {
+            post: {
+                tags: ["sessions"],
+                summary: "Reiniciar sessão",
+                parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+                responses: { "200": { description: "OK" }, "404": { description: "Nǜo encontrada" } },
+            },
+        },
+        "/sessions/{id}/reset-auth": {
+            post: {
+                tags: ["sessions"],
+                summary: "Resetar credenciais (LocalAuth) e reiniciar",
+                parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+                responses: { "200": { description: "OK" }, "404": { description: "Nǜo encontrada" } },
+            },
+        },
+        "/sessions/{id}/unfail": {
+            post: {
+                tags: ["sessions"],
+                summary: "Forçar recuperação se estado for FAILED",
+                parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+                responses: { "200": { description: "OK" }, "404": { description: "Nǜo encontrada" } },
+            },
+        },
     },
 };
+

@@ -16,6 +16,12 @@ type InMemorySession = {
     qrRaw?: string;
     meta: SessionMeta;
     initializing?: boolean;
+    loadingPercent?: number;
+    loadingMessage?: string;
+    lastWWebState?: string;
+    injectionReady?: boolean;
+    retryAttempt?: number;
+    retryTimer?: NodeJS.Timeout | null;
 };
 
 function safeUnlink(p: string) {
@@ -102,12 +108,13 @@ export class SessionManager {
                 if (connected) {
                     logger.info({ sessionId }, "bootstrapped session from disk");
                 } else {
-                    logger.warn({ sessionId }, "session not READY in time, deleting...");
-                    await this.hardDeleteSessionFolder(sessionId);
+                    // Não deletar imediatamente se estiver carregando/aguardando.
+                    // Mantemos a sessão para dar mais tempo ao WhatsApp Web.
+                    logger.warn({ sessionId }, "session not READY yet after bootstrap timeout; keeping data for longer");
                 }
             } catch (err: any) {
                 logger.error({ sessionId, err: err?.message }, "bootstrap failed");
-                await this.hardDeleteSessionFolder(sessionId);
+                // Em falha de bootstrap, evitamos deleção agressiva para não interromper carga do WhatsApp.
             }
         }
     }
@@ -164,6 +171,11 @@ export class SessionManager {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
         if (s.status === "READY" || s.status === "AUTHENTICATED") return { message: "Already authenticated / ready" };
+        if (s.status === "INITIALIZING" && !s.qrData) {
+            const e: any = new Error("Initializing; QR not ready yet");
+            e.code = "INITIALIZING";
+            throw e;
+        }
         if (!s.qrData) throw new Error("QR not available yet");
         return { dataUrl: s.qrData };
     }
@@ -175,6 +187,11 @@ export class SessionManager {
             const err: any = new Error("Already authenticated / ready");
             err.code = "ALREADY_AUTHENTICATED";
             throw err;
+        }
+        if (s.status === "INITIALIZING" && !s.qrRaw) {
+            const e: any = new Error("Initializing; QR not ready yet");
+            e.code = "INITIALIZING";
+            throw e;
         }
         if (!s.qrRaw) throw new Error("QR not available yet");
         const buf = await QRCode.toBuffer(s.qrRaw, { type: "png", width, margin: 2 });
@@ -230,12 +247,46 @@ export class SessionManager {
         return this.startClient(sessionId);
     }
 
+    private clearRetry(sessionId: string) {
+        const s = this.sessions.get(sessionId);
+        if (!s) return;
+        try {
+            if (s.retryTimer) clearTimeout(s.retryTimer);
+        } catch {}
+        s.retryTimer = null;
+        s.retryAttempt = 0;
+    }
+
+    private scheduleRetry(sessionId: string) {
+        const s = this.sessions.get(sessionId);
+        if (!s) return;
+        if (s.status !== "FAILED") return;
+        if (s.retryTimer) return;
+        const attempt = s.retryAttempt || 0;
+        if (attempt >= CONFIG.RECONNECT_MAX_ATTEMPTS) return;
+        const delay = Math.min(CONFIG.RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt), CONFIG.RECONNECT_MAX_DELAY_MS);
+        s.retryAttempt = attempt + 1;
+        s.retryTimer = setTimeout(async () => {
+            s.retryTimer = null;
+            try {
+                await this.restart(sessionId);
+                const cur = this.sessions.get(sessionId);
+                if (cur) {
+                    cur.retryAttempt = 0;
+                    cur.retryTimer = null;
+                }
+            } catch {
+                this.scheduleRetry(sessionId);
+            }
+        }, delay);
+    }
+
     private async loadExistingAndEnsureReady(sessionId: string): Promise<boolean> {
         try {
             await this.startClient(sessionId);
             const ready = await this.waitForReadyOrTimeout(sessionId, CONFIG.BOOTSTRAP_READY_TIMEOUT_MS);
             if (!ready) {
-                await this.destroy(sessionId, true);
+                // Não destruir aqui para dar mais tempo ao WhatsApp Web completar o carregamento.
                 return false;
             }
             return true;
@@ -276,7 +327,10 @@ export class SessionManager {
         const dir = this.sessionDir(sessionId);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         const meta = this.readMeta(sessionId);
+        // Desbloqueia possíveis locks tanto no diretório raiz quanto no perfil LocalAuth (session-<id>)
+        const localAuthDir = path.join(CONFIG.SESSIONS_DIR, `session-${sessionId}`);
         await unlockProfileIfStale(dir);
+        await unlockProfileIfStale(localAuthDir);
         const execPath = CONFIG.CHROME_EXECUTABLE_PATH && fs.existsSync(CONFIG.CHROME_EXECUTABLE_PATH) ? CONFIG.CHROME_EXECUTABLE_PATH : undefined;
         if (CONFIG.CHROME_EXECUTABLE_PATH && !execPath) {
             logger.warn({ wanted: CONFIG.CHROME_EXECUTABLE_PATH }, "CHROME_EXECUTABLE_PATH not found; using Puppeteer default");
@@ -288,9 +342,22 @@ export class SessionManager {
                 executablePath: execPath,
                 args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-features=site-per-process", ...CONFIG.CHROME_EXTRA_ARGS],
             },
+            webVersionCache: { type: "remote", remotePath: "https://raw.githubusercontent.com/pedroslopez/whatsapp-web.js/main/webVersion.json" },
         });
-        const entry: InMemorySession = { client, status: "INITIALIZING", meta, initializing: true };
+        const entry: InMemorySession = { client, status: "INITIALIZING", meta, initializing: true, injectionReady: false, retryAttempt: 0, retryTimer: null };
         this.sessions.set(sessionId, entry);
+
+        // Mantém apenas telemetria silenciosa (sem logs redundantes)
+        client.on("loading_screen", async (percent: number, message: string) => {
+            entry.loadingPercent = percent;
+            entry.loadingMessage = message;
+            await this.emit(sessionId, "loading_screen", { sessionId, percent, message });
+        });
+
+        client.on("change_state", async (state: string) => {
+            entry.lastWWebState = state;
+            await this.emit(sessionId, "change_state", { sessionId, state });
+        });
 
         client.on("qr", async (qr: string) => {
             entry.status = "QRCODE";
@@ -306,7 +373,41 @@ export class SessionManager {
         client.on("authenticated", async () => {
             entry.status = "AUTHENTICATED";
             entry.qrData = undefined;
+            logger.info({ sessionId }, "authenticated");
             await this.emit(sessionId, "authenticated", { sessionId, status: entry.status });
+
+            // Após autenticar, sondar e promover a READY se ficar CONNECTED além do tempo de fallback
+            (async () => {
+                const started = Date.now();
+                while (true) {
+                    if (this.sessions.get(sessionId)?.status === "READY") break;
+                    const elapsed = Date.now() - started;
+                    try {
+                        const st = await client.getState();
+                        if (st === "CONNECTED" && elapsed >= CONFIG.READY_FALLBACK_MS) {
+                            // Antes de promover a READY, garantir que a injeção do wwebjs esteja pronta
+                            try {
+                                await this.waitForWWebReady(client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
+                                entry.injectionReady = true;
+                            } catch (e: any) {
+                                logger.warn({ sessionId, err: e?.message }, "wweb injection not ready on fallback");
+                            }
+                            try { await client.sendPresenceAvailable(); } catch {}
+                            // marca READY mesmo se o evento 'ready' não disparar
+                            entry.meta.lastConnectionAt = new Date().toISOString();
+                            this.writeMeta(entry.meta);
+                            entry.initializing = false;
+                            entry.qrData = undefined;
+                            entry.qrRaw = undefined;
+                            entry.status = "READY";
+                            logger.info({ sessionId }, "ready (fallback)");
+                            await this.emit(sessionId, "ready", { sessionId, status: entry.status, via: "fallback" });
+                            break;
+                        }
+                    } catch (e: any) {}
+                    await new Promise((r) => setTimeout(r, 1000));
+                }
+            })();
         });
 
         client.on("auth_failure", async (m: string) => {
@@ -315,23 +416,34 @@ export class SessionManager {
         });
 
         client.on("ready", async () => {
+            // caminho normal de promoção a READY
             entry.status = "READY";
             entry.initializing = false;
             entry.qrData = undefined;
             entry.qrRaw = undefined;
+            entry.injectionReady = true;
             entry.meta.lastConnectionAt = new Date().toISOString();
             this.writeMeta(entry.meta);
+            logger.info({ sessionId }, "ready");
             await this.emit(sessionId, "ready", { sessionId, status: entry.status });
         });
 
         client.on("disconnected", async (reason: string) => {
             entry.status = "DISCONNECTED";
             await this.emit(sessionId, "disconnected", { sessionId, status: entry.status, reason });
-            try {
-                logger.warn({ sessionId, reason }, "disconnected: restarting client");
-                await client.initialize();
-            } catch (err: any) {
-                logger.error({ sessionId, err: err?.message }, "reinitialize failed");
+            logger.warn({ sessionId, reason }, "disconnected");
+            // Re-inicializa com atraso curto para evitar conflitos de I/O (Windows EBUSY)
+            if (!entry.initializing) {
+                entry.initializing = true;
+                setTimeout(async () => {
+                    try {
+                        await client.initialize();
+                    } catch (err: any) {
+                        logger.error({ sessionId, err: err?.message }, "reinitialize failed");
+                    } finally {
+                        entry.initializing = false;
+                    }
+                }, 1500);
             }
         });
 
@@ -356,8 +468,36 @@ export class SessionManager {
             });
         });
 
-        await client.initialize();
+        try {
+            await client.initialize();
+        } catch (err: any) {
+            // Marca estado para não ficar preso em INITIALIZING
+            const entry = this.sessions.get(sessionId);
+            if (entry) {
+                entry.initializing = false;
+                entry.status = "FAILED";
+            }
+            // Tenta um desbloqueio adicional no perfil e repropaga o erro
+            try { await unlockProfileIfStale(localAuthDir); } catch {}
+            throw err;
+        }
         return entry;
+    }
+
+    private async waitForWWebReady(client: Client, timeoutMs: number): Promise<void> {
+        const started = Date.now();
+        let lastErr: any;
+        while (Date.now() - started < timeoutMs) {
+            try {
+                const ver = await (client as any).getWWebVersion?.();
+                if (ver) return;
+            } catch (e: any) {
+                lastErr = e;
+            }
+            await new Promise((r) => setTimeout(r, 500));
+        }
+        const msg = lastErr?.message || "unknown";
+        throw new Error(`WWeb not ready after ${timeoutMs}ms: ${msg}`);
     }
 
     async destroy(sessionId: string, deleteData = false) {
@@ -366,6 +506,7 @@ export class SessionManager {
         try {
             await s.client.destroy();
         } catch {}
+        this.clearRetry(sessionId);
         this.sessions.delete(sessionId);
         if (deleteData) {
             await this.hardDeleteSessionFolder(sessionId);
@@ -405,6 +546,10 @@ export class SessionManager {
     async listChats(sessionId: string, page = 1, limit = 10) {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
+        if (!s.injectionReady) {
+            await this.waitForWWebReady(s.client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
+            s.injectionReady = true;
+        }
         const chats = await s.client.getChats();
         const total = chats.length;
         const l = Math.max(1, Math.min(100, Number(limit) || 10));
@@ -421,6 +566,10 @@ export class SessionManager {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
         if (s.status !== "READY") throw new Error(`Session not READY (status=${s.status})`);
+        if (!s.injectionReady) {
+            await this.waitForWWebReady(s.client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
+            s.injectionReady = true;
+        }
         const sent = await s.client.sendMessage(target, message);
         return { id: sent.id._serialized, to: sent.to, chatId: target, timestamp: sent.timestamp, type: "text", body: sent.body };
     }
@@ -438,6 +587,10 @@ export class SessionManager {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
         if (s.status !== "READY") throw new Error(`Session not READY (status=${s.status})`);
+        if (!s.injectionReady) {
+            await this.waitForWWebReady(s.client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
+            s.injectionReady = true;
+        }
         const target = await this.resolveTarget(sessionId, payload.chatId, payload.to);
         const kind = (payload.type || (payload.media ? "media" : "text")).toLowerCase();
         let sent: any;
@@ -453,6 +606,95 @@ export class SessionManager {
             sent = await s.client.sendMessage(target, mm, opts);
             return { id: sent.id._serialized, to: sent.to, chatId: target, timestamp: sent.timestamp, type: "media", body: sent.body, filename: mm.filename, mimetype: mm.mimetype };
         }
+    }
+
+    // Exporta mensagens de um chat, buscando em lotes até esgotar
+    async getMessages(sessionId: string, chatId: string) {
+        const s = this.sessions.get(sessionId);
+        if (!s) throw new Error("Session not found");
+        if (s.status !== "READY") throw new Error(`Session not READY (status=${s.status})`);
+        if (!s.injectionReady) {
+            await this.waitForWWebReady(s.client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
+            s.injectionReady = true;
+        }
+        const chat = await s.client.getChatById(chatId);
+        const all: any[] = [];
+        let before: any = undefined;
+        while (true) {
+            const batch: any[] = await (chat as any).fetchMessages({ limit: 100, before });
+            if (!batch || batch.length === 0) break;
+            all.push(...batch);
+            const last = batch[batch.length - 1];
+            const lastId = last?.id?._serialized || last?.id;
+            if (!lastId || lastId === before) break;
+            before = lastId;
+            // Proteção: evita loops extremos
+            if (all.length >= 5000) break;
+        }
+        const simplified = all.map((m: any) => ({
+            id: m.id?._serialized || m.id,
+            from: m.from,
+            to: m.to,
+            timestamp: m.timestamp,
+            dateSent: typeof m.timestamp === 'number' ? new Date(m.timestamp * 1000).toISOString() : undefined,
+            type: m.type,
+            body: m.body,
+            fromMe: m.fromMe,
+            hasMedia: Boolean(m.hasMedia),
+            ack: m.ack,
+        }));
+        return { sessionId, chatId, total: simplified.length, messages: simplified };
+    }
+
+    // Resolve número (com ou sem código do país) para chatId
+    async resolveChatId(sessionId: string, phoneRaw: string) {
+        const s = this.sessions.get(sessionId);
+        if (!s) throw new Error("Session not found");
+        if (!phoneRaw || !phoneRaw.trim()) throw new Error("phone is required");
+        let digits = String(phoneRaw).replace(/\D/g, "");
+        if (!digits.startsWith("55")) digits = `55${digits}`;
+        // getNumberId espera o número sem sufixo @c.us
+        const wa = await s.client.getNumberId(digits);
+        if (!wa) return { sessionId, phone: digits, exists: false };
+        const chatId = wa._serialized || `${digits}@c.us`;
+        return { sessionId, phone: digits, exists: true, chatId };
+    }
+
+    // Reinicia a sessão mantendo as credenciais
+    async restart(sessionId: string) {
+        const s = this.sessions.get(sessionId);
+        if (!s) throw new Error("Session not found");
+        try { await s.client.destroy(); } catch {}
+        this.clearRetry(sessionId);
+        this.sessions.delete(sessionId);
+        const entry = await this.startClient(sessionId);
+        return { sessionId, status: entry.status };
+    }
+
+    // Apaga as credenciais (LocalAuth) e reinicia pedindo novo QR
+    async resetAuth(sessionId: string) {
+        const s = this.sessions.get(sessionId);
+        if (s) {
+            try { await s.client.destroy(); } catch {}
+            this.sessions.delete(sessionId);
+        }
+        this.clearRetry(sessionId);
+        const authDir = path.join(CONFIG.SESSIONS_DIR, `session-${sessionId}`);
+        try { await unlockProfileIfStale(authDir); } catch {}
+        await this.rmDirRetry(authDir);
+        const root = this.sessionDir(sessionId);
+        if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
+        this.writeMeta(this.readMeta(sessionId));
+        const entry = await this.startClient(sessionId);
+        return { sessionId, status: entry.status };
+    }
+
+    // Se estiver em FAILED, tenta reiniciar
+    async unfail(sessionId: string) {
+        const s = this.sessions.get(sessionId);
+        if (!s) throw new Error("Session not found");
+        if (s.status !== "FAILED") return { sessionId, status: s.status };
+        return this.restart(sessionId);
     }
 }
 
