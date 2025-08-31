@@ -31,8 +31,6 @@ function safeUnlink(p: string) {
 }
 
 async function unlockProfileIfStale(sessionDir: string) {
-    // Remove lock markers regardless of other Chromium processes.
-    // We only touch files inside the given session directory.
     try {
         const patterns = ["SingletonLock", "SingletonCookie", "SingletonSocket", "DevToolsActivePort"];
         const walk = (dir: string) => {
@@ -85,14 +83,12 @@ export class SessionManager {
         const roots = new Set(all.filter((n) => !n.startsWith("session-")));
         for (const name of all) {
             if (name.startsWith("session-session-")) {
-                // Clearly malformed nesting; remove it.
                 await this.rmDirRetry(path.join(CONFIG.SESSIONS_DIR, name));
                 continue;
             }
             if (name.startsWith("session-")) {
                 const suffix = name.slice(8);
                 if (!roots.has(suffix)) {
-                    // Adopt LocalAuth-only folder by recreating the root + meta, so we can bootstrap it.
                     const rootDir = path.join(CONFIG.SESSIONS_DIR, suffix);
                     try {
                         if (!fs.existsSync(rootDir)) fs.mkdirSync(rootDir, { recursive: true });
@@ -285,11 +281,25 @@ export class SessionManager {
     private async loadExistingAndEnsureReady(sessionId: string): Promise<boolean> {
         try {
             await this.startClient(sessionId);
-            const ready = await this.waitForReadyOrTimeout(sessionId, CONFIG.BOOTSTRAP_READY_TIMEOUT_MS);
-            if (!ready) {
-                return false;
+            let ready = await this.waitForReadyOrTimeout(sessionId, CONFIG.BOOTSTRAP_READY_TIMEOUT_MS);
+            if (ready) return true;
+            try {
+                await this.restart(sessionId);
+            } catch {}
+            ready = await this.waitForReadyOrTimeout(sessionId, CONFIG.BOOTSTRAP_READY_TIMEOUT_MS);
+            if (ready) return true;
+            const s = this.sessions.get(sessionId);
+            if (s?.status === "AUTH_FAILURE") {
+                try {
+                    await this.destroy(sessionId, true);
+                } catch {}
+            } else {
+                try {
+                    if (s && s.status !== "FAILED") s.status = "FAILED";
+                    this.scheduleRetry(sessionId);
+                } catch {}
             }
-            return true;
+            return false;
         } catch (e: any) {
             logger.error({ sessionId, err: e?.message }, "loadExisting failed");
             return false;
