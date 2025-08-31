@@ -115,7 +115,9 @@ export class SessionManager {
             }
         }
         try {
+            logger.info({ total: ids.length }, "recoverAfterBootstrap start");
             await this.recoverAfterBootstrap(ids);
+            logger.info("recoverAfterBootstrap done");
         } catch {}
     }
 
