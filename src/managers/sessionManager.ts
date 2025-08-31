@@ -470,6 +470,7 @@ export class SessionManager {
             try {
                 await unlockProfileIfStale(localAuthDir);
             } catch {}
+            this.scheduleRetry(sessionId);
             throw err;
         }
         return entry;
