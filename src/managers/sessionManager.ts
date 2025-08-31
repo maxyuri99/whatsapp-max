@@ -114,6 +114,9 @@ export class SessionManager {
                 logger.error({ sessionId, err: err?.message }, "bootstrap failed");
             }
         }
+        try {
+            await this.recoverAfterBootstrap(ids);
+        } catch {}
     }
 
     list() {
@@ -303,6 +306,40 @@ export class SessionManager {
         } catch (e: any) {
             logger.error({ sessionId, err: e?.message }, "loadExisting failed");
             return false;
+        }
+    }
+
+    private async recoverAfterBootstrap(ids: string[]) {
+        const spacing = Math.max(CONFIG.RECONNECT_BASE_DELAY_MS, 2000);
+        const maxAttempts = 3;
+        const attempts = new Map<string, number>();
+        while (true) {
+            let attempted = false;
+            for (const id of ids) {
+                const s = this.sessions.get(id);
+                if (!s) continue;
+                if (s.status === "READY") continue;
+                if (s.status === "AUTH_FAILURE") {
+                    try { await this.destroy(id, true); } catch {}
+                    continue;
+                }
+                if (s.status === "QRCODE") continue;
+                if (s.initializing) continue;
+                if (s.retryTimer) continue;
+                const cur = attempts.get(id) || 0;
+                if (cur >= maxAttempts) continue;
+                attempts.set(id, cur + 1);
+                attempted = true;
+                try { await this.restart(id); } catch {}
+                try { await this.waitForReadyOrTimeout(id, CONFIG.BOOTSTRAP_READY_TIMEOUT_MS); } catch {}
+                await new Promise((r) => setTimeout(r, spacing));
+            }
+            if (!attempted) break;
+            const allReady = ids.every((id) => {
+                const s = this.sessions.get(id);
+                return !s || s.status === "READY" || s.status === "QRCODE";
+            });
+            if (allReady) break;
         }
     }
 
