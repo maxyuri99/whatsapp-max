@@ -34,7 +34,13 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
 const server = app.listen(CONFIG.PORT, async () => {
     logger.info({ port: CONFIG.PORT }, "server up");
-    await sessionManager.bootstrapFromDisk();
+    logger.info("bootstrapFromDisk: start");
+    try {
+        await sessionManager.bootstrapFromDisk();
+        logger.info("bootstrapFromDisk: done");
+    } catch (err: any) {
+        logger.error({ err: err?.stack || err?.message || err }, "bootstrapFromDisk failed");
+    }
 });
 
 const shutdown = () => {
