@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import os from "os";
 import QRCode from "qrcode";
 import child_process from "child_process";
 import { Client, LocalAuth, Message, MessageAck, MessageMedia } from "whatsapp-web.js";
@@ -22,6 +23,8 @@ type InMemorySession = {
     injectionReady?: boolean;
     retryAttempt?: number;
     retryTimer?: NodeJS.Timeout | null;
+    lockFd?: number;
+    lockPath?: string;
 };
 
 function safeUnlink(p: string) {
@@ -105,11 +108,8 @@ export class SessionManager {
         for (const sessionId of ids) {
             try {
                 const connected = await this.loadExistingAndEnsureReady(sessionId);
-                if (connected) {
-                    logger.info({ sessionId }, "bootstrapped session from disk");
-                } else {
-                    logger.warn({ sessionId }, "session not READY yet after bootstrap timeout; keeping data for longer");
-                }
+                if (connected) logger.info({ sessionId }, "bootstrapped session from disk");
+                else logger.warn({ sessionId }, "session not READY yet after bootstrap timeout; keeping data for longer");
             } catch (err: any) {
                 logger.error({ sessionId, err: err?.message }, "bootstrap failed");
             }
@@ -129,16 +129,16 @@ export class SessionManager {
     private sessionDir(sessionId: string) {
         return path.join(CONFIG.SESSIONS_DIR, sessionId);
     }
-
     private metaPath(sessionId: string) {
         return path.join(this.sessionDir(sessionId), "meta.json");
+    }
+    private lockFile(sessionId: string) {
+        return path.join(this.sessionDir(sessionId), ".instance.lock");
     }
 
     private readMeta(sessionId: string): SessionMeta {
         const p = this.metaPath(sessionId);
-        if (fs.existsSync(p)) {
-            return JSON.parse(fs.readFileSync(p, "utf-8"));
-        }
+        if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf-8"));
         const now = new Date().toISOString();
         return { sessionId, createdAt: now, updatedAt: now };
     }
@@ -235,6 +235,43 @@ export class SessionManager {
         return t;
     }
 
+    private async acquireLock(sessionId: string): Promise<number> {
+        const p = this.lockFile(sessionId);
+        const fd = fs.openSync(p, "wx");
+        fs.writeFileSync(fd, JSON.stringify({ host: os.hostname(), pid: process.pid, at: new Date().toISOString() }));
+        return fd;
+    }
+
+    private async waitForLock(sessionId: string, timeoutMs = 60000): Promise<{ fd: number; path: string }> {
+        const p = this.lockFile(sessionId);
+        const start = Date.now();
+        while (true) {
+            try {
+                const fd = await this.acquireLock(sessionId);
+                return { fd, path: p };
+            } catch (e: any) {
+                if (e && e.code === "EEXIST") {
+                    if (Date.now() - start > timeoutMs) throw new Error("LOCK_TIMEOUT");
+                    await new Promise((r) => setTimeout(r, 1000));
+                    continue;
+                }
+                throw e;
+            }
+        }
+    }
+
+    private releaseLock(s: InMemorySession) {
+        if (!s.lockPath || s.lockFd === undefined) return;
+        try {
+            fs.closeSync(s.lockFd as number);
+        } catch {}
+        try {
+            fs.unlinkSync(s.lockPath);
+        } catch {}
+        s.lockFd = undefined;
+        s.lockPath = undefined;
+    }
+
     async createNewSession(sessionId: string) {
         if (this.sessions.has(sessionId)) throw new Error("Session already exists (in memory)");
         const dir = this.sessionDir(sessionId);
@@ -282,9 +319,7 @@ export class SessionManager {
         try {
             await this.startClient(sessionId);
             const ready = await this.waitForReadyOrTimeout(sessionId, CONFIG.BOOTSTRAP_READY_TIMEOUT_MS);
-            if (!ready) {
-                return false;
-            }
+            if (!ready) return false;
             return true;
         } catch (e: any) {
             logger.error({ sessionId, err: e?.message }, "loadExisting failed");
@@ -320,16 +355,21 @@ export class SessionManager {
 
     private async startClient(sessionId: string): Promise<InMemorySession> {
         if (this.sessions.has(sessionId)) return this.sessions.get(sessionId)!;
+
         const dir = this.sessionDir(sessionId);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         const meta = this.readMeta(sessionId);
         const localAuthDir = path.join(CONFIG.SESSIONS_DIR, `session-${sessionId}`);
         await unlockProfileIfStale(dir);
         await unlockProfileIfStale(localAuthDir);
+
+        const { fd: lockFd, path: lockPath } = await this.waitForLock(sessionId, 90_000);
+
         const execPath = CONFIG.CHROME_EXECUTABLE_PATH && fs.existsSync(CONFIG.CHROME_EXECUTABLE_PATH) ? CONFIG.CHROME_EXECUTABLE_PATH : undefined;
         if (CONFIG.CHROME_EXECUTABLE_PATH && !execPath) {
             logger.warn({ wanted: CONFIG.CHROME_EXECUTABLE_PATH }, "CHROME_EXECUTABLE_PATH not found; using Puppeteer default");
         }
+
         const client = new Client({
             authStrategy: new LocalAuth({ clientId: sessionId, dataPath: CONFIG.SESSIONS_DIR }),
             puppeteer: {
@@ -339,7 +379,18 @@ export class SessionManager {
             },
             webVersionCache: { type: "remote", remotePath: "https://raw.githubusercontent.com/pedroslopez/whatsapp-web.js/main/webVersion.json" },
         });
-        const entry: InMemorySession = { client, status: "INITIALIZING", meta, initializing: true, injectionReady: false, retryAttempt: 0, retryTimer: null };
+
+        const entry: InMemorySession = {
+            client,
+            status: "INITIALIZING",
+            meta,
+            initializing: true,
+            injectionReady: false,
+            retryAttempt: 0,
+            retryTimer: null,
+            lockFd,
+            lockPath,
+        };
         this.sessions.set(sessionId, entry);
 
         client.on("loading_screen", async (percent: number, message: string) => {
@@ -397,7 +448,7 @@ export class SessionManager {
                             await this.emit(sessionId, "ready", { sessionId, status: entry.status, via: "fallback" });
                             break;
                         }
-                    } catch (e: any) {}
+                    } catch {}
                     await new Promise((r) => setTimeout(r, 1000));
                 }
             })();
@@ -438,7 +489,7 @@ export class SessionManager {
             }
         });
 
-        client.on("message", async (msg: Message) => {
+        client.on("message", async (msg: any) => {
             await this.emit(sessionId, "message", {
                 sessionId,
                 from: msg.from,
@@ -451,12 +502,7 @@ export class SessionManager {
         });
 
         client.on("message_ack", async (msg: Message, ack: MessageAck) => {
-            await this.emit(sessionId, "message_ack", {
-                sessionId,
-                id: msg.id?._serialized,
-                to: msg.to,
-                ack,
-            });
+            await this.emit(sessionId, "message_ack", { sessionId, id: msg.id?._serialized, to: msg.to, ack });
         });
 
         try {
@@ -466,6 +512,7 @@ export class SessionManager {
             if (entry) {
                 entry.initializing = false;
                 entry.status = "FAILED";
+                this.releaseLock(entry);
             }
             try {
                 await unlockProfileIfStale(localAuthDir);
@@ -498,11 +545,10 @@ export class SessionManager {
         try {
             await s.client.destroy();
         } catch {}
+        this.releaseLock(s);
         this.clearRetry(sessionId);
         this.sessions.delete(sessionId);
-        if (deleteData) {
-            await this.hardDeleteSessionFolder(sessionId);
-        }
+        if (deleteData) await this.hardDeleteSessionFolder(sessionId);
         return { sessionId, deletedData: deleteData };
     }
 
@@ -549,7 +595,7 @@ export class SessionManager {
         const pages = Math.max(1, Math.ceil(total / l));
         const start = (p - 1) * l;
         const slice = chats.slice(start, start + l);
-        const ids = slice.map((c) => c.id?._serialized || String(c.id));
+        const ids = slice.map((c: any) => c.id?._serialized || String(c.id));
         return { sessionId, page: p, limit: l, total, pages, ids };
     }
 
@@ -644,7 +690,7 @@ export class SessionManager {
         if (!digits.startsWith("55")) digits = `55${digits}`;
         const wa = await s.client.getNumberId(digits);
         if (!wa) return { sessionId, phone: digits, exists: false };
-        const chatId = wa._serialized || `${digits}@c.us`;
+        const chatId = (wa as any)._serialized || `${digits}@c.us`;
         return { sessionId, phone: digits, exists: true, chatId };
     }
 
@@ -654,6 +700,7 @@ export class SessionManager {
         try {
             await s.client.destroy();
         } catch {}
+        this.releaseLock(s);
         this.clearRetry(sessionId);
         this.sessions.delete(sessionId);
         const entry = await this.startClient(sessionId);
@@ -666,6 +713,7 @@ export class SessionManager {
             try {
                 await s.client.destroy();
             } catch {}
+            this.releaseLock(s);
             this.sessions.delete(sessionId);
         }
         this.clearRetry(sessionId);
@@ -686,6 +734,22 @@ export class SessionManager {
         if (!s) throw new Error("Session not found");
         if (s.status !== "FAILED") return { sessionId, status: s.status };
         return this.restart(sessionId);
+    }
+
+    async gracefulShutdown() {
+        const ids = Array.from(this.sessions.keys());
+        for (const id of ids) {
+            const s = this.sessions.get(id);
+            if (!s) continue;
+            try {
+                await s.client.destroy();
+            } catch {}
+            this.releaseLock(s!);
+            this.sessions.delete(id);
+        }
+        try {
+            child_process.execSync("pkill -TERM chromium || true", { stdio: "ignore" });
+        } catch {}
     }
 }
 
