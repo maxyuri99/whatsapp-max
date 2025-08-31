@@ -85,13 +85,19 @@ export class SessionManager {
         const roots = new Set(all.filter((n) => !n.startsWith("session-")));
         for (const name of all) {
             if (name.startsWith("session-session-")) {
+                // Clearly malformed nesting; remove it.
                 await this.rmDirRetry(path.join(CONFIG.SESSIONS_DIR, name));
                 continue;
             }
             if (name.startsWith("session-")) {
                 const suffix = name.slice(8);
                 if (!roots.has(suffix)) {
-                    await this.rmDirRetry(path.join(CONFIG.SESSIONS_DIR, name));
+                    // Adopt LocalAuth-only folder by recreating the root + meta, so we can bootstrap it.
+                    const rootDir = path.join(CONFIG.SESSIONS_DIR, suffix);
+                    try {
+                        if (!fs.existsSync(rootDir)) fs.mkdirSync(rootDir, { recursive: true });
+                        this.writeMeta(this.readMeta(suffix));
+                    } catch {}
                 }
             }
         }
@@ -460,7 +466,6 @@ export class SessionManager {
         try {
             await client.initialize();
         } catch (err: any) {
-            // Handle profile-in-use by unlocking and retrying once
             let recovered = false;
             const msg = String(err?.message || "").toLowerCase();
             if (msg.includes("profile appears to be in use")) {
@@ -483,7 +488,6 @@ export class SessionManager {
                 try {
                     await unlockProfileIfStale(localAuthDir);
                 } catch {}
-                // Schedule an automatic retry to self-heal
                 this.scheduleRetry(sessionId);
                 throw err;
             }
