@@ -475,6 +475,7 @@ export class SessionManager {
 
         client.on("disconnected", async (reason: string) => {
             entry.status = "DISCONNECTED";
+            entry.injectionReady = false;
             await this.emit(sessionId, "disconnected", { sessionId, status: entry.status, reason });
             logger.warn({ sessionId, reason }, "disconnected");
             if (!entry.initializing) {
@@ -549,15 +550,25 @@ export class SessionManager {
         let lastErr: any;
         while (Date.now() - started < timeoutMs) {
             try {
+                // Ensure WhatsApp Web has loaded
                 const ver = await (client as any).getWWebVersion?.();
-                if (ver) return;
+                if (!ver) {
+                    await new Promise((r) => setTimeout(r, 300));
+                    continue;
+                }
+                // Ensure wwebjs injection is available (window.WWebJS.getChat exists)
+                const injected = await (client as any).pupPage?.evaluate?.(() => {
+                    // @ts-ignore - evaluated in browser
+                    return Boolean(window && (window as any).WWebJS && typeof (window as any).WWebJS.getChat === 'function');
+                });
+                if (injected) return; // fully ready for chat operations
             } catch (e: any) {
                 lastErr = e;
             }
-            await new Promise((r) => setTimeout(r, 500));
+            await new Promise((r) => setTimeout(r, 300));
         }
         const msg = lastErr?.message || "unknown";
-        throw new Error(`WWeb not ready after ${timeoutMs}ms: ${msg}`);
+        throw new Error(`WWebJS injection not ready after ${timeoutMs}ms: ${msg}`);
     }
 
     async destroy(sessionId: string, deleteData = false) {
