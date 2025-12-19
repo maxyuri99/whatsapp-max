@@ -21,6 +21,11 @@ function effectiveChromeExecPath(): string | undefined {
     return undefined;
 }
 
+function parseWebVersionCache(v: string | undefined): "local" | "remote" {
+    const t = String(v || "").trim().toLowerCase();
+    return t === "remote" ? "remote" : "local";
+}
+
 export const CONFIG = {
     PORT: num(process.env.PORT, 3000),
     SESSIONS_DIR: process.env.SESSIONS_DIR || "./sessions",
@@ -33,6 +38,11 @@ export const CONFIG = {
         .filter(Boolean),
     WEBHOOK_TIMEOUT_MS: num(process.env.WEBHOOK_TIMEOUT_MS, 6000),
     WEBHOOK_MAX_RETRIES: num(process.env.WEBHOOK_MAX_RETRIES, 3),
+    // WEB_VERSION unset => usar versão mais atual do Web WhatsApp (modo auto).
+    WEB_VERSION: (process.env.WEB_VERSION || "").trim(),
+    // Cache remoto traz sempre a última versão publicada pelo wwebjs.
+    WEB_VERSION_CACHE: parseWebVersionCache(process.env.WEB_VERSION_CACHE || "remote"),
+    WEB_VERSION_REMOTE_PATH: process.env.WEB_VERSION_REMOTE_PATH || "https://raw.githubusercontent.com/pedroslopez/whatsapp-web.js/main/webVersion.json",
     MAX_CONCURRENT_SESSIONS: num(process.env.MAX_CONCURRENT_SESSIONS, 0),
     BOOTSTRAP_READY_TIMEOUT_MS: num(process.env.BOOTSTRAP_READY_TIMEOUT_MS, 180000),
     DESTROY_MAX_RETRIES: num(process.env.DESTROY_MAX_RETRIES, 5),
