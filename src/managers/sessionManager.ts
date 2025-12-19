@@ -383,6 +383,10 @@ export class SessionManager {
         if (CONFIG.CHROME_EXECUTABLE_PATH && !execPath) {
             logger.warn({ wanted: CONFIG.CHROME_EXECUTABLE_PATH }, "CHROME_EXECUTABLE_PATH not found; using Puppeteer default");
         }
+        const webVersionCache =
+            CONFIG.WEB_VERSION_CACHE === "remote"
+                ? { type: "remote", remotePath: CONFIG.WEB_VERSION_REMOTE_PATH }
+                : { type: "local" };
         const client = new Client({
             authStrategy: new LocalAuth({ clientId: sessionId, dataPath: CONFIG.SESSIONS_DIR }),
             puppeteer: {
@@ -390,7 +394,9 @@ export class SessionManager {
                 executablePath: execPath,
                 args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-features=site-per-process", ...CONFIG.CHROME_EXTRA_ARGS],
             },
-            webVersionCache: { type: "remote", remotePath: "https://raw.githubusercontent.com/pedroslopez/whatsapp-web.js/main/webVersion.json" },
+            // Se WEB_VERSION vier vazia, wwebjs usará a versão mais recente disponível.
+            webVersion: CONFIG.WEB_VERSION || undefined,
+            webVersionCache,
         });
         const entry: InMemorySession = { client, status: "INITIALIZING", meta, initializing: true, injectionReady: false, retryAttempt: 0, retryTimer: null };
         this.sessions.set(sessionId, entry);
@@ -478,18 +484,9 @@ export class SessionManager {
             entry.injectionReady = false;
             await this.emit(sessionId, "disconnected", { sessionId, status: entry.status, reason });
             logger.warn({ sessionId, reason }, "disconnected");
-            if (!entry.initializing) {
-                entry.initializing = true;
-                setTimeout(async () => {
-                    try {
-                        await client.initialize();
-                    } catch (err: any) {
-                        logger.error({ sessionId, err: err?.message }, "reinitialize failed");
-                    } finally {
-                        entry.initializing = false;
-                    }
-                }, 1500);
-            }
+            // Avoid reusing the same page to prevent duplicate bindings; schedule a clean restart.
+            entry.status = "FAILED";
+            this.scheduleRetry(sessionId);
         });
 
         client.on("message", async (msg: Message) => {
