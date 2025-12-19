@@ -22,6 +22,7 @@ type InMemorySession = {
     injectionReady?: boolean;
     retryAttempt?: number;
     retryTimer?: NodeJS.Timeout | null;
+    closing?: boolean;
 };
 
 function safeUnlink(p: string) {
@@ -46,6 +47,54 @@ async function unlockProfileIfStale(sessionDir: string) {
 
 export class SessionManager {
     private sessions = new Map<string, InMemorySession>();
+
+    private isTargetClosedError(err: any) {
+        const msg = String(err?.message || "").toLowerCase();
+        return (
+            msg.includes("target closed") ||
+            msg.includes("session closed") ||
+            msg.includes("page has been closed") ||
+            msg.includes("most likely the page has been closed")
+        );
+    }
+
+    private handleUnexpectedTargetClose(sessionId: string, source: string) {
+        const s = this.sessions.get(sessionId);
+        if (!s || s.closing) return;
+        if (s.status === "FAILED" || s.status === "AUTH_FAILURE") return;
+        s.injectionReady = false;
+        s.status = "FAILED";
+        logger.warn({ sessionId, source }, "puppeteer target closed; scheduling restart");
+        this.scheduleRetry(sessionId);
+    }
+
+    private ensurePuppeteerAlive(sessionId: string, session?: InMemorySession) {
+        const s = session ?? this.sessions.get(sessionId);
+        if (!s) throw new Error("Session not found");
+        const page: any = (s.client as any)?.pupPage;
+        if (page?.isClosed?.()) {
+            this.handleUnexpectedTargetClose(sessionId, "page_closed_check");
+            throw new Error("Browser page was closed; restarting session");
+        }
+    }
+
+    private async ensureInjectionReady(sessionId: string, session?: InMemorySession) {
+        const s = session ?? this.sessions.get(sessionId);
+        if (!s) throw new Error("Session not found");
+        this.ensurePuppeteerAlive(sessionId, s);
+        if (!s.injectionReady) {
+            try {
+                await this.waitForWWebReady(s.client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
+                s.injectionReady = true;
+            } catch (err: any) {
+                if (this.isTargetClosedError(err)) {
+                    this.handleUnexpectedTargetClose(sessionId, "ensure_injection_ready");
+                    throw new Error("Sessão foi reiniciada porque o navegador fechou");
+                }
+                throw err;
+            }
+        }
+    }
 
     constructor() {
         if (!fs.existsSync(CONFIG.SESSIONS_DIR)) {
@@ -383,9 +432,10 @@ export class SessionManager {
         if (CONFIG.CHROME_EXECUTABLE_PATH && !execPath) {
             logger.warn({ wanted: CONFIG.CHROME_EXECUTABLE_PATH }, "CHROME_EXECUTABLE_PATH not found; using Puppeteer default");
         }
-        const webVersionCache = CONFIG.WEB_VERSION_CACHE === "remote"
-            ? ({ type: "remote", remotePath: CONFIG.WEB_VERSION_REMOTE_PATH } as const)
-            : ({ type: "local" } as const);
+        const webVersionCache =
+            CONFIG.WEB_VERSION_CACHE === "remote"
+                ? { type: "remote" as const, remotePath: CONFIG.WEB_VERSION_REMOTE_PATH }
+                : { type: "local" as const };
         const client = new Client({
             authStrategy: new LocalAuth({ clientId: sessionId, dataPath: CONFIG.SESSIONS_DIR }),
             puppeteer: {
@@ -397,7 +447,7 @@ export class SessionManager {
             webVersion: CONFIG.WEB_VERSION || undefined,
             webVersionCache,
         });
-        const entry: InMemorySession = { client, status: "INITIALIZING", meta, initializing: true, injectionReady: false, retryAttempt: 0, retryTimer: null };
+        const entry: InMemorySession = { client, status: "INITIALIZING", meta, initializing: true, injectionReady: false, retryAttempt: 0, retryTimer: null, closing: false };
         this.sessions.set(sessionId, entry);
 
         client.on("loading_screen", async (percent: number, message: string) => {
@@ -437,8 +487,7 @@ export class SessionManager {
                         const st = await client.getState();
                         if (st === "CONNECTED" && elapsed >= CONFIG.READY_FALLBACK_MS) {
                             try {
-                                await this.waitForWWebReady(client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
-                                entry.injectionReady = true;
+                                await this.ensureInjectionReady(sessionId, entry);
                             } catch (e: any) {
                                 logger.warn({ sessionId, err: e?.message }, "wweb injection not ready on fallback");
                             }
@@ -511,6 +560,10 @@ export class SessionManager {
 
         try {
             await client.initialize();
+            const page: any = (client as any).pupPage;
+            const browser: any = (client as any).pupBrowser;
+            page?.on?.("close", () => this.handleUnexpectedTargetClose(sessionId, "page_close_event"));
+            browser?.on?.("disconnected", () => this.handleUnexpectedTargetClose(sessionId, "browser_disconnected"));
         } catch (err: any) {
             let recovered = false;
             const msg = String(err?.message || "").toLowerCase();
@@ -571,8 +624,10 @@ export class SessionManager {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
         try {
+            s.closing = true;
             await s.client.destroy();
         } catch {}
+        s.closing = false;
         this.clearRetry(sessionId);
         this.sessions.delete(sessionId);
         if (deleteData) {
@@ -584,9 +639,6 @@ export class SessionManager {
     private async hardDeleteSessionFolder(sessionId: string) {
         const base = CONFIG.SESSIONS_DIR;
         const root = this.sessionDir(sessionId);
-        try {
-            child_process.execSync("pkill -9 chromium || true", { stdio: "ignore" });
-        } catch {}
         await unlockProfileIfStale(root);
         await this.rmDirRetry(root);
         let name = `session-${sessionId}`;
@@ -613,10 +665,7 @@ export class SessionManager {
     async listChats(sessionId: string, page = 1, limit = 10) {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
-        if (!s.injectionReady) {
-            await this.waitForWWebReady(s.client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
-            s.injectionReady = true;
-        }
+        await this.ensureInjectionReady(sessionId, s);
         const chats = await s.client.getChats();
         const total = chats.length;
         const l = Math.max(1, Math.min(100, Number(limit) || 10));
@@ -633,10 +682,7 @@ export class SessionManager {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
         if (s.status !== "READY") throw new Error(`Session not READY (status=${s.status})`);
-        if (!s.injectionReady) {
-            await this.waitForWWebReady(s.client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
-            s.injectionReady = true;
-        }
+        await this.ensureInjectionReady(sessionId, s);
         const sent = await s.client.sendMessage(target, message);
         return { id: sent.id._serialized, to: sent.to, chatId: target, timestamp: sent.timestamp, type: "text", body: sent.body };
     }
@@ -654,10 +700,7 @@ export class SessionManager {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
         if (s.status !== "READY") throw new Error(`Session not READY (status=${s.status})`);
-        if (!s.injectionReady) {
-            await this.waitForWWebReady(s.client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
-            s.injectionReady = true;
-        }
+        await this.ensureInjectionReady(sessionId, s);
         const target = await this.resolveTarget(sessionId, payload.chatId, payload.to);
         const kind = (payload.type || (payload.media ? "media" : "text")).toLowerCase();
         let sent: any;
@@ -679,10 +722,7 @@ export class SessionManager {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
         if (s.status !== "READY") throw new Error(`Session not READY (status=${s.status})`);
-        if (!s.injectionReady) {
-            await this.waitForWWebReady(s.client, CONFIG.WWEB_READY_CHECK_TIMEOUT_MS);
-            s.injectionReady = true;
-        }
+        await this.ensureInjectionReady(sessionId, s);
         const chat = await s.client.getChatById(chatId);
         const all: any[] = [];
         let before: any = undefined;
@@ -727,8 +767,10 @@ export class SessionManager {
         const s = this.sessions.get(sessionId);
         if (!s) throw new Error("Session not found");
         try {
+            s.closing = true;
             await s.client.destroy();
         } catch {}
+        s.closing = false;
         this.clearRetry(sessionId);
         this.sessions.delete(sessionId);
         const entry = await this.startClient(sessionId);
@@ -739,8 +781,10 @@ export class SessionManager {
         const s = this.sessions.get(sessionId);
         if (s) {
             try {
+                s.closing = true;
                 await s.client.destroy();
             } catch {}
+            s.closing = false;
             this.sessions.delete(sessionId);
         }
         this.clearRetry(sessionId);
