@@ -383,10 +383,9 @@ export class SessionManager {
         if (CONFIG.CHROME_EXECUTABLE_PATH && !execPath) {
             logger.warn({ wanted: CONFIG.CHROME_EXECUTABLE_PATH }, "CHROME_EXECUTABLE_PATH not found; using Puppeteer default");
         }
-        const webVersionCache =
-            CONFIG.WEB_VERSION_CACHE === "remote"
-                ? { type: "remote", remotePath: CONFIG.WEB_VERSION_REMOTE_PATH }
-                : { type: "local" };
+        const webVersionCache = CONFIG.WEB_VERSION_CACHE === "remote"
+            ? ({ type: "remote", remotePath: CONFIG.WEB_VERSION_REMOTE_PATH } as const)
+            : ({ type: "local" } as const);
         const client = new Client({
             authStrategy: new LocalAuth({ clientId: sessionId, dataPath: CONFIG.SESSIONS_DIR }),
             puppeteer: {
