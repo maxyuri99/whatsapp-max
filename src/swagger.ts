@@ -1,6 +1,6 @@
 export const swaggerSpec = {
     openapi: "3.0.3",
-    info: { title: "WhatsApp Max API", description: "API de sessões WhatsApp usando whatsapp-web.js", version: "1.3.0" },
+    info: { title: "WhatsApp Max API", description: "API de sessões WhatsApp usando Baileys", version: "1.4.0" },
     servers: [{ url: "/", description: "Local" }],
     components: {
         securitySchemes: { ApiKeyAuth: { type: "apiKey", in: "header", name: "x-api-key" } },

@@ -1,6 +1,5 @@
 import axios from "axios";
 import path from "path";
-import { MessageMedia } from "whatsapp-web.js";
 
 type MediaInput = {
     url?: string;
@@ -45,7 +44,9 @@ function ensureFilename(name: string | undefined, mime: string | undefined): str
     return ext ? `${n}.${ext}` : n;
 }
 
-export async function buildMessageMedia(input: MediaInput): Promise<MessageMedia> {
+export type BuiltMedia = { data: Buffer; mimetype: string; filename: string };
+
+export async function buildBaileysMedia(input: MediaInput): Promise<BuiltMedia> {
     if (input.base64) {
         let mime = input.mimetype;
         let data = input.base64;
@@ -56,14 +57,13 @@ export async function buildMessageMedia(input: MediaInput): Promise<MessageMedia
             data = m[2];
         }
         const filename = ensureFilename(input.filename, mime || "application/octet-stream");
-        return new MessageMedia(mime || "application/octet-stream", data, filename);
+        return { mimetype: mime || "application/octet-stream", filename, data: Buffer.from(data, "base64") };
     }
     if (input.url) {
         const resp = await axios.get(input.url, { responseType: "arraybuffer" });
         const mime = input.mimetype || String(resp.headers["content-type"] || "application/octet-stream");
         const filename = ensureFilename(input.filename || filenameFromUrl(input.url), mime);
-        const b64 = Buffer.from(resp.data).toString("base64");
-        return new MessageMedia(mime, b64, filename);
+        return { mimetype: mime, filename, data: Buffer.from(resp.data) };
     }
     throw new Error("media.url or media.base64 is required");
 }
