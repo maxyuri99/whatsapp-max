@@ -2,7 +2,7 @@
     "name": "whatsapp-max-api",
     "version": "1.0.0",
     "private": true,
-    "description": "API WhatsApp (wwebjs) com controle de sessões, QR, webhooks e Docker",
+    "description": "API WhatsApp (WPPConnect) com controle de sessões, QR, webhooks e Docker",
     "main": "dist/index.js",
     "scripts": {
         "dev": "ts-node-dev --transpile-only --respawn --ignore-watch sessions --ignore-watch dist src/index.ts",
@@ -10,7 +10,7 @@
         "start": "node dist/index.js"
     },
     "dependencies": {
-        "@whiskeysockets/baileys": "^6.7.9",
+        "@wppconnect-team/wppconnect": "^1.38.0",
         "axios": "^1.11.0",
         "cors": "^2.8.5",
         "dotenv": "^17.2.1",

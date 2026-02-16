@@ -67,3 +67,7 @@ export async function buildBaileysMedia(input: MediaInput): Promise<BuiltMedia> 
     }
     throw new Error("media.url or media.base64 is required");
 }
+
+export function toDataUrl(media: BuiltMedia): string {
+    return `data:${media.mimetype};base64,${media.data.toString("base64")}`;
+}

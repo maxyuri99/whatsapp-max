@@ -1,6 +1,6 @@
 export const swaggerSpec = {
     openapi: "3.0.3",
-    info: { title: "WhatsApp Max API", description: "API de sessões WhatsApp usando Baileys", version: "1.4.0" },
+    info: { title: "WhatsApp Max API", description: "API de sessões WhatsApp usando WPPConnect", version: "1.5.0" },
     servers: [{ url: "/", description: "Local" }],
     components: {
         securitySchemes: { ApiKeyAuth: { type: "apiKey", in: "header", name: "x-api-key" } },
@@ -43,6 +43,25 @@ export const swaggerSpec = {
                     type: { type: "string", enum: ["text", "media", "image", "document", "audio", "video"], nullable: true },
                     body: { type: "string", example: "Olá!", nullable: true },
                     caption: { type: "string", example: "veja isso", nullable: true },
+                    title: { type: "string", example: "Acoes rapidas", nullable: true },
+                    footer: { type: "string", example: "Escolha uma opcao", nullable: true },
+                    useInteractiveMessage: { type: "boolean", example: true, nullable: true },
+                    copyCode: { type: "string", example: "DESC10", nullable: true },
+                    copyButtonText: { type: "string", example: "Copiar cupom", nullable: true },
+                    buttons: {
+                        type: "array",
+                        nullable: true,
+                        items: {
+                            type: "object",
+                            properties: {
+                                text: { type: "string", example: "Site oficial" },
+                                id: { type: "string", example: "opt_1", nullable: true },
+                                phoneNumber: { type: "string", example: "+55 11 99999-9999", nullable: true },
+                                url: { type: "string", example: "https://wppconnect.io", nullable: true },
+                                code: { type: "string", example: "CUPOM10", nullable: true },
+                            },
+                        },
+                    },
                     media: {
                         type: "object",
                         nullable: true,
@@ -225,7 +244,7 @@ export const swaggerSpec = {
         "/sessions/{id}/reset-auth": {
             post: {
                 tags: ["sessions"],
-                summary: "Resetar credenciais (LocalAuth) e reiniciar",
+                summary: "Resetar credenciais (token) e reiniciar",
                 parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
                 responses: { "200": { description: "OK" }, "404": { description: "Nǜo encontrada" } },
             },
@@ -233,7 +252,7 @@ export const swaggerSpec = {
         "/sessions/{id}/unfail": {
             post: {
                 tags: ["sessions"],
-                summary: "Forçar recuperação se estado for FAILED",
+                summary: "Forçar recuperação se estado for DISCONNECTED/AUTH_FAILURE",
                 parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
                 responses: { "200": { description: "OK" }, "404": { description: "Nǜo encontrada" } },
             },

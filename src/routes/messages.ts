@@ -5,7 +5,7 @@ import { ok, fail } from "../utils/http";
 export const messagesRouter = Router();
 
 messagesRouter.post("/send", async (req: Request, res: Response) => {
-    const { sessionId, chatId, to, type, body, media, caption } = req.body as {
+    const { sessionId, chatId, to, type, body, media, caption, buttons, title, footer, useInteractiveMessage, copyCode, copyButtonText } = req.body as {
         sessionId?: string;
         chatId?: string;
         to?: string;
@@ -13,10 +13,29 @@ messagesRouter.post("/send", async (req: Request, res: Response) => {
         body?: string;
         media?: { url?: string; base64?: string; mimetype?: string; filename?: string };
         caption?: string;
+        buttons?: Array<{ id?: string; phoneNumber?: string; url?: string; code?: string; text: string }>;
+        title?: string;
+        footer?: string;
+        useInteractiveMessage?: boolean;
+        copyCode?: string;
+        copyButtonText?: string;
     };
     if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
     try {
-        const data = await sessionManager.sendAdvanced(sessionId, { chatId, to, type, body, media, caption });
+        const data = await sessionManager.sendAdvanced(sessionId, {
+            chatId,
+            to,
+            type,
+            body,
+            media,
+            caption,
+            buttons: buttons as any,
+            title,
+            footer,
+            useInteractiveMessage,
+            copyCode,
+            copyButtonText,
+        });
         return ok(res, data);
     } catch (err: any) {
         const msg = err?.message || "Unable to send message";

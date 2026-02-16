@@ -1,13 +1,13 @@
 # WhatsApp Max API
 
-API em Node.js/TypeScript para gerenciar sessões do WhatsApp Web usando whatsapp-web.js, com:
+API em Node.js/TypeScript para gerenciar sessões do WhatsApp Web usando WPPConnect, com:
 
-- Criação/recuperação de sessões (LocalAuth)
+- Criação/recuperação de sessões (token store em disco)
 - QR Code (dataURL e PNG)
 - Envio de mensagens (texto e mídia)
 - Webhooks de eventos (mensagens, ACKs, status)
 - Paginação/listagem de conversas (IDs de chats)
-- Reconexão automática e limpeza de locks do Chromium
+- Reconexão manual/sob demanda (sem retry agressivo automático)
 - Documentação Swagger em `/docs`
 - Pronto para Docker (prod e dev)
 
@@ -38,8 +38,8 @@ API em Node.js/TypeScript para gerenciar sessões do WhatsApp Web usando whatsap
 ## Arquitetura
 
 - Express + TypeScript
-- whatsapp-web.js (Puppeteer/Chromium)
-- LocalAuth (dados por pasta em `SESSIONS_DIR`)
+- WPPConnect (Puppeteer/Chromium)
+- Persistência de sessão em disco (`SESSIONS_DIR/<sessionId>`)
 - Pino (logs)
 - Swagger UI (`/docs`, `/openapi.json`)
 - Docker (chromium instalado)
